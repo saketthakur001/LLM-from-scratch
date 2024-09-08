@@ -1,0 +1,85 @@
+# ignore the data file
+txt/
+
+
+# Ignore Python cache files
+
+__pycache__/
+
+*.py[cod]
+
+
+
+# Ignore Jupyter Notebook checkpoints
+
+.ipynb_checkpoints/
+
+
+
+# Ignore virtual environment folders
+
+venv/
+
+env/
+
+.venv/
+
+.env/
+
+
+
+# Ignore PyTorch model checkpoints
+
+*.pt
+
+*.pth
+
+*.ckpt
+
+
+
+# Ignore data files and directories
+
+data/
+
+datasets/
+
+*.csv
+
+*.json
+
+
+
+# Ignore logs
+
+logs/
+
+*.log
+
+
+
+# Ignore temporary files
+
+*.tmp
+
+*.temp
+
+
+
+# Ignore IDE specific files
+
+.vscode/
+
+.idea/
+
+*.sublime-workspace
+
+*.sublime-project
+
+
+
+# Ignore system files
+
+.DS_Store
+
+Thumbs.db
