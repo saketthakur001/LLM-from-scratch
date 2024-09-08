@@ -18,6 +18,10 @@ __pycache__/
 
 # Ignore virtual environment folders
 
+.pytorch
+
+pytorch/
+
 venv/
 
 env/
