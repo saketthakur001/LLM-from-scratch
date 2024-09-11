@@ -113,11 +113,33 @@ class GPT(nn.Module):
         return logits, loss
 
     @torch.no_grad()
-    def generate(self, idx: torch.Tensor, max_new_tokens: int, temperature: float = 1.0, top_k: int | None = None):
+    def generate(
+        self,
+        idx: torch.Tensor,
+        max_new_tokens: int,
+        temperature: float = 1.0,
+        top_k: int | None = None,
+        logits_processor=None,
+    ):
+        """Autoregressive sampling.
+
+        `logits_processor`, if given, is a callable `(idx, logits) -> logits`
+        called each step with the full sequence generated so far and the raw
+        next-token logits (shape `(B, vocab_size)`), *before* temperature/
+        top_k are applied. It should return a same-shape logits tensor with
+        disallowed entries set to `-inf`. This is the hook constrained
+        decoding (e.g. `llm.tool_format.make_constrained_logits_processor`)
+        plugs into -- it lets the caller restrict sampling to only the
+        tokens that keep the output consistent with a fixed grammar, without
+        `generate()` itself knowing anything about that grammar.
+        """
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.config.block_size:]
             logits, _ = self(idx_cond)
-            logits = logits[:, -1, :] / temperature
+            logits = logits[:, -1, :]
+            if logits_processor is not None:
+                logits = logits_processor(idx, logits)
+            logits = logits / temperature
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = float("-inf")
