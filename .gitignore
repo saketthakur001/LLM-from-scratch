@@ -1,6 +1,12 @@
 # ignore the data file
 txt/
 
+# regenerated tokenizer artifacts
+hermes-vocab.json
+hermes-merges.txt
+tokenized_texts.json
+checkpoints/
+
 
 # Ignore Python cache files
 
