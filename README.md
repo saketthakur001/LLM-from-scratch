@@ -45,3 +45,122 @@ python -m llm.generate --prompt "Once upon a time"
   `prepare_data.py` — not meant to be hand-edited or treated as source.
 - `TrainConfig.device` defaults to `"cpu"` as a safety default; it will run but is
   not a realistic way to train this model to convergence.
+
+## Tool-calling extension
+
+An extension to the base pipeline aimed at eventual fine-tuning for tool use.
+Like the rest of this repo, **nothing here is trained** — it's a scaffold: a
+fixed output format, a training-example encoder, a parser/validator, a
+constrained-decoding hook wired into `GPT.generate()`, and an eval harness
+that runs against any checkpoint (including a random one). All of it is
+tested and runnable today; the missing piece is compute to actually fine-tune
+on it.
+
+### Files
+
+- `llm/tool_format.py` — the format spec, encoder, parser/validator, and the
+  `JSONCharTracker` state machine used for constrained decoding.
+- `llm/tool_eval.py` — a tiny synthetic eval set + scorer, runnable as
+  `python -m llm.tool_eval`.
+- `llm/test_tool_format.py` — unit tests for the parser and the character
+  tracker, runnable as `python -m unittest llm.test_tool_format -v`.
+
+### Output format
+
+A tool call is a single JSON object wrapped in fixed sentinel tags:
+
+```
+<tool_call>{"name": "get_weather", "arguments": {"location": "Paris"}}</tool_call>
+```
+
+Formally: `<tool_call>` + a JSON object with exactly two keys (`"name"`: a
+non-empty string, `"arguments"`: a JSON object, itself arbitrary JSON) +
+`</tool_call>`. `encode_tool_call(name, arguments)` produces this text;
+`encode_training_example(prompt, name, arguments)` wraps it with a
+`### Prompt:` / `### Response:` template to give a full SFT-style training
+string — this is the text a future fine-tuning stage would tokenize and
+train on with the existing `dataset.py`/`train.py` machinery, but no such
+training run exists yet.
+
+`parse_tool_call(text)` extracts and validates a tool call out of arbitrary
+(possibly noisy) generated text: it finds the first `<tool_call>...
+</tool_call>` span, requires valid JSON inside, requires the `name`/
+`arguments` shape above, and rejects anything else (missing tags, invalid
+JSON, wrong types, extra top-level keys), returning a `ParseResult` with
+either a `ToolCall` or a human-readable `error` string.
+
+### Constrained decoding
+
+`GPT.generate()` now accepts an optional `logits_processor(idx, logits) ->
+logits` argument, called each decoding step with the sequence generated so
+far and the raw next-token logits, before temperature/top-k are applied. It
+returns a same-shape logits tensor with `-inf` in place of any logit the
+processor wants to forbid — `generate()` itself has no grammar knowledge; it
+just applies whatever mask it's given.
+
+`llm.tool_format.make_constrained_logits_processor(tokenizer)` builds one
+such processor for the tool-call grammar above. Internally it drives a
+`JSONCharTracker`: a small state machine (sentinel-tag matching + a
+JSON parser modeled as key/value/comma "phases" per open `{`/`[` frame) that
+tracks, character by character, which characters are legal next. Each
+decoding step it replays the tokens generated so far through the tracker to
+find the current grammar state, then — for every token in the vocabulary —
+decodes that token's text and checks (on a scratch copy of the tracker)
+whether appending it stays grammar-valid; illegal tokens get their logit set
+to `-inf` before sampling.
+
+This is a real, testable constraint (see `test_tool_format.py`'s
+`TestJSONCharTracker` cases — trailing commas, unquoted keys, broken
+sentinel tags, and truncated literals are all correctly rejected character
+by character), not a no-op stub. It is simplified relative to a production
+constrained decoder:
+
+- it recomputes the tracker state from scratch each step by replaying all
+  generated text, rather than maintaining incremental state — fine for the
+  short outputs here, O(steps²) in general;
+- it evaluates every vocabulary token independently each step (masking is
+  `O(vocab_size)` per step) rather than walking a compiled trie/automaton
+  over the tokenizer's vocabulary;
+- the JSON sub-grammar skips some corners of the spec (no unicode `\uXXXX`
+  validation, permissive number-boundary handling) — it's "real JSON
+  structure" enforcement, not a full conformance-tested JSON parser.
+
+### Running the eval harness
+
+```bash
+python -m llm.tool_eval
+```
+
+This builds a throwaway byte-level BPE tokenizer over a tiny in-memory
+corpus, constructs a randomly-initialized `GPTConfig`-sized `GPT` (2 layers,
+32-dim, no checkpoint loaded — there is no trained checkpoint to load), runs
+it through `generate()` with the constrained-decoding hook over a 5-example
+synthetic eval set (`EVAL_SET` in `tool_eval.py`), and scores each output
+with `parse_tool_call` for `valid_format` (parses at all) and `exact_match`
+(right tool name + right arguments). To point it at a real checkpoint
+instead, swap `_random_model_generate_fn()`'s tokenizer/model construction
+for `llm.tokenizer.load_tokenizer` + a loaded `GPT` state dict, same pattern
+as `llm/generate.py`.
+
+The point of running it against a random model is to prove the *harness* —
+prompt → generate → parse → score — is wired correctly end-to-end. With
+random weights the model should score at or near zero; that is the expected
+and correct result, not a bug.
+
+### Honest limitations
+
+- **The model is untrained.** No fine-tuning run exists or has been
+  attempted — same situation as the base language model in this repo (no
+  GPU available). The eval harness works today; the numbers it reports
+  against the current, randomly-initialized weights are meaningless as a
+  measure of tool-calling ability and are not meant to be.
+- **The constrained decoder is simplified**, as detailed above — it is a
+  real per-token JSON/sentinel-tag filter, not a full JSON grammar
+  compiled into a token-trie the way a production system (e.g. guided
+  generation via a compiled FSM/PDA over the tokenizer's vocab) would do
+  it. It also assumes batch size 1.
+- **Not benchmarked against any off-the-shelf tool-calling model.** There
+  is no compute here to run comparisons, and doing so wouldn't be a
+  meaningful comparison against an untrained 2-6 layer toy model anyway.
+  The synthetic eval set (5 examples) is a harness smoke test, not a
+  benchmark.
